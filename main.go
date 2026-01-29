@@ -22,7 +22,8 @@ func NewServer() *Server {
 	midtrans := config.NewMidtrans()
 	google_maps := config.NewGoogleMaps()
 	email := config.NewEmailConfig()
-	app := &config.App{DB: db, ES: es, Redis: redis, Midtrans: midtrans, GoogleMaps: google_maps, Email: email}
+	gemini := config.NewGemini()
+	app := &config.App{DB: db, ES: es, Redis: redis, Midtrans: midtrans, GoogleMaps: google_maps, Email: email, Gemini: gemini}
 	r := gin.Default()
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"http://localhost:3000"},

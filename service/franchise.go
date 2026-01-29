@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"mime/multipart"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/chrisprojs/Franchiso/config"
@@ -15,6 +17,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/olivere/elastic/v7"
+
+	"google.golang.org/genai"
 )
 
 type UploadFranchiseRequest struct {
@@ -426,6 +430,25 @@ func EditFranchise(c *gin.Context, app *config.App) {
 			"created_at":       franchise.CreatedAt,
 			"updated_at":       franchise.UpdatedAt,
 		}
+
+		// Generate text embedding if franchise is boosted
+		if franchise.IsBoosted && os.Getenv("GEMINI_ACTIVE") == "true" && app.Gemini != nil {
+			textForEmbedding := franchise.Brand + " " + franchise.Description
+			embeddingRes, err := app.Gemini.Models.EmbedContent(context.Background(), "text-embedding-004", genai.Text(textForEmbedding), nil)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal generate embedding: " + err.Error()})
+				return
+			}
+			if len(embeddingRes.Embeddings) > 0 {
+				// Convert []float32 to []float64 for Elasticsearch
+				textVector := make([]float64, len(embeddingRes.Embeddings[0].Values))
+				for i, v := range embeddingRes.Embeddings[0].Values {
+					textVector[i] = float64(v)
+				}
+				doc["text_vector"] = textVector
+			}
+		}
+
 		_, err = app.ES.Index().
 			Index("franchises").
 			Id(franchise.ID.String()).
@@ -475,7 +498,7 @@ func DisplayFranchiseDetailByID(c *gin.Context, app *config.App) {
 		Index("franchises").
 		Id(franchiseID).
 		FetchSourceContext(elastic.NewFetchSourceContext(true).
-			Exclude("logo.vector", "ad_photos.vector")).
+			Exclude("logo.vector", "ad_photos.vector", "text_vector")).
 		Do(context.Background())
 	if err != nil || !res.Found {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Franchise tidak ditemukan"})
@@ -542,12 +565,13 @@ type SearchFranchiseRequest struct {
 }
 
 type SearchFranchiseResponse struct {
-	Total      int64                `json:"total"`
-	Franchises []models.FranchiseES `json:"franchises"`
+	Total           int64                `json:"total"`
+	IsSuggestedByAI bool                 `json:"is_suggested_by_ai"`
+	Franchises      []models.FranchiseES `json:"franchises"`
 }
 
 func SearchingFranchise(c *gin.Context, app *config.App) {
-	// Bind request parameters from query string
+
 	var req SearchFranchiseRequest
 	if err := c.ShouldBind(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -556,24 +580,9 @@ func SearchingFranchise(c *gin.Context, app *config.App) {
 
 	searchService := app.ES.Search().Index("franchises")
 
-	var cacheKey string
-	if req.SearchByImage == nil {
-		cacheKey, err := utils.GenerateCacheKey("search-franchise", req)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal generate cache key"})
-			return
-		}
-		val, err := app.Redis.Get(context.Background(), cacheKey).Result()
-		if err == nil {
-            var cachedResponse SearchFranchiseResponse
-            if err := json.Unmarshal([]byte(val), &cachedResponse); err == nil {
-                c.JSON(http.StatusOK, cachedResponse)
-                return
-            }
-        }
-	}
-
-	// Set default values for page and limit
+	// ======================
+	// Pagination
+	// ======================
 	page := 1
 	limit := 10
 
@@ -583,225 +592,293 @@ func SearchingFranchise(c *gin.Context, app *config.App) {
 	if req.Limit != nil && *req.Limit > 0 {
 		limit = *req.Limit
 	}
+	from := (page - 1) * limit
 
-	// Build ES query
-	boolQuery := elastic.NewBoolQuery()
+	// ======================
+	// FILTER QUERY
+	// ======================
+	filterQuery := elastic.NewBoolQuery()
+	textQuery := elastic.NewBoolQuery()
 
-	// Filter by search query (fulltext)
+	// ======================
+	// TEXT SEARCH
+	// ======================
+	var textSearchCount int64
+	var err error
+
 	if req.SearchQuery != "" {
-		// Use combined query for flexible search
-		searchQuery := elastic.NewBoolQuery()
 
-		// Query for brand: wildcard to search for substring in the middle of text (case-insensitive)
-		// Example: "urg" will find "Burger King"
-		brandWildcardQuery := elastic.NewWildcardQuery("brand", "*"+req.SearchQuery+"*")
-		brandWildcardQuery.CaseInsensitive(true)
+		query := strings.ToLower(req.SearchQuery)
 
-		// Alternative query: match query for search with token analysis (better for complete words)
-		brandMatchQuery := elastic.NewMatchQuery("brand", req.SearchQuery)
-		brandMatchQuery.Operator("or")
-		brandMatchQuery.Fuzziness("AUTO")
+		exactQuery := elastic.NewTermQuery("brand", query).Boost(0.5)
+		wildcardQuery := elastic.NewWildcardQuery("brand", "*" + query + "*").Boost(0.5)
 
-		// Combination: one of the above queries must match
-		searchQuery.Should(brandWildcardQuery)
-		searchQuery.Should(brandMatchQuery)
-		searchQuery.MinimumShouldMatch("1")
-		boolQuery.Must(searchQuery)
+		textQuery.
+			Should(exactQuery).
+			Should(wildcardQuery).
+			MinimumShouldMatch("1")
+
+		countBool := elastic.NewBoolQuery().Must(textQuery)
+
+		textSearchCount, err = app.ES.Count("franchises").
+			Query(countBool).
+			Do(context.Background())
+
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "failed counting text search",
+			})
+			return
+		}
 	}
 
-	// Filter by category
+	// ======================
+	// EMBEDDING FALLBACK
+	// ======================
+	var textVector []float32
+	var textScoreSource interface{}
+	isSuggestedByAI := false
+
+	if req.SearchQuery != "" &&
+		os.Getenv("GEMINI_ACTIVE") == "true" &&
+		textSearchCount == 0 {
+
+		// AI fallback
+		cacheKey, _ := utils.GenerateCacheKey("search-embedding", req.SearchQuery)
+
+		if val, err := app.Redis.Get(context.Background(), cacheKey).Result(); err == nil {
+			_ = json.Unmarshal([]byte(val), &textVector)
+		}
+
+		if len(textVector) == 0 {
+			res, err := app.Gemini.Models.EmbedContent(
+				context.Background(),
+				"text-embedding-004",
+				genai.Text(req.SearchQuery),
+				nil,
+			)
+
+			if err == nil && len(res.Embeddings) > 0 {
+				textVector = res.Embeddings[0].Values
+				data, _ := json.Marshal(textVector)
+				app.Redis.Set(context.Background(), cacheKey, data, 24*time.Hour)
+			}
+		}
+
+		if len(textVector) > 0 {
+			isSuggestedByAI = true
+		}
+
+	} else if req.SearchQuery != "" {
+
+		// Normal text scoring
+		textScoreQuery := elastic.NewFunctionScoreQuery().
+			Query(textQuery).
+			BoostMode("sum")
+
+		textScoreSource, err = textScoreQuery.Source()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": err.Error(),
+			})
+			return
+		}
+	}
+
+	// ======================
+	// IMAGE SEARCH
+	// ======================
+	var imageVector []float64
+
+	if req.SearchByImage != nil {
+
+		imageURL, err := utils.UploadToStorageProxy(req.SearchByImage)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "upload failed"})
+			return
+		}
+
+		vec, err := utils.ConvertToVectorizedImage(imageURL)
+		_ = utils.DeleteFromStorageProxy(imageURL)
+
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "image vector failed"})
+			return
+		}
+
+		imageVector = vec.Vector
+		isSuggestedByAI = true
+	}
+
+	// ======================
+	// FILTERS
+	// ======================
 	if req.Category != nil {
-		boolQuery.Filter(elastic.NewTermQuery("category.category_id.keyword", *req.Category))
+		filterQuery.Filter(
+			elastic.NewTermQuery("category.category_id.keyword", *req.Category),
+		)
 	}
 
-	// Filter by investment range
 	if req.MinInvestment != nil || req.MaxInvestment != nil {
-		rangeQuery := elastic.NewRangeQuery("investment")
+		q := elastic.NewRangeQuery("investment")
 		if req.MinInvestment != nil {
-			rangeQuery.Gte(*req.MinInvestment)
+			q.Gte(*req.MinInvestment)
 		}
 		if req.MaxInvestment != nil {
-			rangeQuery.Lte(*req.MaxInvestment)
+			q.Lte(*req.MaxInvestment)
 		}
-		boolQuery.Filter(rangeQuery)
+		filterQuery.Filter(q)
 	}
 
-	// Filter by monthly revenue range
 	if req.MinMonthlyRevenue != nil {
-		rangeQuery := elastic.NewRangeQuery("monthly_revenue")
-		rangeQuery.Gte(*req.MinMonthlyRevenue)
-		boolQuery.Filter(rangeQuery)
+		filterQuery.Filter(
+			elastic.NewRangeQuery("monthly_revenue").Gte(*req.MinMonthlyRevenue),
+		)
 	}
 
-	// Filter by ROI range
 	if req.MinROI != nil || req.MaxROI != nil {
-		rangeQuery := elastic.NewRangeQuery("roi")
+		q := elastic.NewRangeQuery("roi")
 		if req.MinROI != nil {
-			rangeQuery.Gte(*req.MinROI)
+			q.Gte(*req.MinROI)
 		}
 		if req.MaxROI != nil {
-			rangeQuery.Lte(*req.MaxROI)
+			q.Lte(*req.MaxROI)
 		}
-		boolQuery.Filter(rangeQuery)
+		filterQuery.Filter(q)
 	}
 
-	// Filter by branch count range
 	if req.MinBranchCount != nil || req.MaxBranchCount != nil {
-		rangeQuery := elastic.NewRangeQuery("branch_count")
+		q := elastic.NewRangeQuery("branch_count")
 		if req.MinBranchCount != nil {
-			rangeQuery.Gte(*req.MinBranchCount)
+			q.Gte(*req.MinBranchCount)
 		}
 		if req.MaxBranchCount != nil {
-			rangeQuery.Lte(*req.MaxBranchCount)
+			q.Lte(*req.MaxBranchCount)
 		}
-		boolQuery.Filter(rangeQuery)
+		filterQuery.Filter(q)
 	}
 
-	// Filter by year founded range
 	if req.MinYearFounded != nil || req.MaxYearFounded != nil {
-		rangeQuery := elastic.NewRangeQuery("year_founded")
+		q := elastic.NewRangeQuery("year_founded")
 		if req.MinYearFounded != nil {
-			rangeQuery.Gte(*req.MinYearFounded)
+			q.Gte(*req.MinYearFounded)
 		}
 		if req.MaxYearFounded != nil {
-			rangeQuery.Lte(*req.MaxYearFounded)
+			q.Lte(*req.MaxYearFounded)
 		}
-		boolQuery.Filter(rangeQuery)
+		filterQuery.Filter(q)
 	}
 
-	// Handle search by image
-	var queryVector []float64
-	if req.SearchByImage != nil {
-		const K_NEIGHBORS = 5
-		const NUM_CANDIDATES = 50
-		// Upload image to storage proxy first
-		imageUrl, err := utils.UploadToStorageProxy(req.SearchByImage)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengupload gambar"})
-			return
+	filterSource, _ := filterQuery.Source()
+
+	// ======================
+	// KNN QUERY
+	// ======================
+	var knnQuery []map[string]interface{}
+
+	if len(textVector) > 0 {
+
+		vec64 := make([]float64, len(textVector))
+		for i, v := range textVector {
+			vec64[i] = float64(v)
 		}
 
-		vectorizedImage, err := utils.ConvertToVectorizedImage(imageUrl)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengkonversi gambar ke vector"})
-			return
-		}
-		err = utils.DeleteFromStorageProxy(imageUrl)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal delete gambar"})
-			return
-		}
+		knnQuery = append(knnQuery, map[string]interface{}{
+			"field":          "text_vector",
+			"query_vector":   vec64,
+			"k":              10,
+			"num_candidates": 50,
+			"filter":         filterSource,
+			"boost":          0.8,
+		})
+	}
 
-		queryVector = vectorizedImage.Vector
-
-		const textWeight = 0.7
-		const visualWeight = 0.3
-
-		knnQuery := []map[string]interface{}{
-			{
+	if len(imageVector) > 0 {
+		knnQuery = append(knnQuery,
+			map[string]interface{}{
 				"field":          "logo.vector",
-				"query_vector":   queryVector,
-				"k":              K_NEIGHBORS,
-				"num_candidates": NUM_CANDIDATES,
-				"boost":          visualWeight,
+				"query_vector":   imageVector,
+				"k":              10,
+				"num_candidates": 50,
+				"filter":         filterSource,
+				"boost":          0.2,
 			},
-			{
+			map[string]interface{}{
 				"field":          "ad_photos.vector",
-				"query_vector":   queryVector,
-				"k":              K_NEIGHBORS,
-				"num_candidates": NUM_CANDIDATES,
-				"boost":          visualWeight,
+				"query_vector":   imageVector,
+				"k":              10,
+				"num_candidates": 50,
+				"filter":         filterSource,
+				"boost":          0.2,
 			},
-		}
+		)
+	}
 
-		textScoreQuery := elastic.NewFunctionScoreQuery().
-			Query(boolQuery). // All filters and text search go here
-			ScoreMode("sum").
-			BoostMode("replace"). // Replace the original score with the function score
-			AddScoreFunc(elastic.NewScriptFunction(
-			elastic.NewScript("double text_score = _score; return text_score / (text_score + 1.0) * params.weight;"). // Simple sigmoid-like normalization
-			Param("weight", textWeight),
-		))
+	// ======================
+	// FINAL QUERY
+	// ======================
+	boolQuery := map[string]interface{}{
+		"filter": filterSource,
+	}
 
-		textQuerySource, err := textScoreQuery.Source()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membuat fungsi skor untuk text: " + err.Error()})
-			return
-		}
+	if textScoreSource != nil {
+		boolQuery["must"] = textScoreSource
+	}
 
-		// Create search source with KNN
-		searchSource := map[string]interface{}{
-			"query": textQuerySource,
-			"knn": knnQuery,
-			"_source": map[string]interface{}{
-				"excludes": []string{"logo.vector", "ad_photos.vector"},
-				"includes": []string{"*"}, // Include all other fields
+	searchSource := map[string]interface{}{
+		"query": map[string]interface{}{
+			"bool": boolQuery,
+		},
+		"from": from,
+		"size": limit,
+		"sort": []map[string]interface{}{
+			{"is_boosted": map[string]interface{}{"order": "desc"}},
+			{"_score": map[string]interface{}{"order": "desc"}},
+		},
+		"_source": map[string]interface{}{
+			"excludes": []string{
+				"text_vector",
+				"logo.vector",
+				"ad_photos.vector",
 			},
-		}
-		
-		searchService = searchService.Source(searchSource)
-	} else{
-		searchService = searchService.Query(boolQuery)
+		},
 	}
 
-	// Sorting: is_boosted first, then by relevance if search query exists, then by created_at
-	if req.SearchQuery != "" {
-		searchService = searchService.Sort("is_boosted", false).Sort("_score", false)
-	} else {
-		searchService = searchService.Sort("is_boosted", false)
+	// ONLY vector search uses min_score
+	if len(knnQuery) > 0 {
+		searchSource["knn"] = knnQuery
+		searchSource["min_score"] = 0.1
 	}
 
-	// Pagination
-	from := (page - 1) * limit
-	searchService = searchService.From(from).Size(limit)
+	// ======================
+	// EXECUTE
+	// ======================
+	res, err := searchService.
+		Source(searchSource).
+		Do(context.Background())
 
-	// Debug: Print query for troubleshooting
-	if req.SearchQuery != "" {
-		fmt.Printf("Search Query: %s\n", req.SearchQuery)
-	}
-
-	searchService = searchService.Size(100).
-		FetchSourceContext(elastic.NewFetchSourceContext(true).
-		Exclude("logo.vector", "ad_photos.vector"))
-
-	// Execute
-	res, err := searchService.Do(context.Background())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mencari franchise"})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "search failed",
+		})
 		return
 	}
 
-	// Debug: Print total hits
-	fmt.Printf("Total hits: %d\n", res.Hits.TotalHits.Value)
-
-	// Get results
 	franchises := []models.FranchiseES{}
 	for _, hit := range res.Hits.Hits {
 		var f models.FranchiseES
 		if err := json.Unmarshal(hit.Source, &f); err == nil {
-			// Debug: Print score for debugging
-			if req.SearchQuery != "" && hit.Score != nil {
-				fmt.Printf("Franchise: %s, Score: %f\n", f.Brand, *hit.Score)
-			}
 			franchises = append(franchises, f)
 		}
 	}
 
-	// Create response
-	response := SearchFranchiseResponse{
-		Total:      res.Hits.TotalHits.Value,
-		Franchises: franchises,
-	}
-
-	if req.SearchByImage == nil {
-        cacheData, err := json.Marshal(response)
-        if err == nil {
-            app.Redis.Set(context.Background(), cacheKey, cacheData, 10*time.Minute)
-        }
-    }
-
-	c.JSON(http.StatusOK, response)
+	c.JSON(http.StatusOK, SearchFranchiseResponse{
+		Total:           res.Hits.TotalHits.Value,
+		IsSuggestedByAI: isSuggestedByAI,
+		Franchises:      franchises,
+	})
 }
+
 
 type CategoryResponse struct {
 	Categories []models.Category `json:"categories"`

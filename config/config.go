@@ -7,6 +7,7 @@ import (
 	"github.com/go-pg/pg/v10"
 	"github.com/olivere/elastic/v7"
 	"github.com/redis/go-redis/v9"
+	"google.golang.org/genai"
 )
 
 type App struct {
@@ -16,6 +17,7 @@ type App struct {
 	Midtrans   *MidtransConfig
 	GoogleMaps *GoogleMapsConfig
 	Email      *EmailConfig
+	Gemini		*genai.Client
 }
 
 type dbLogger struct{}

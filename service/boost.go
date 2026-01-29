@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	midtrans "github.com/midtrans/midtrans-go"
 	"github.com/midtrans/midtrans-go/coreapi"
 	snap "github.com/midtrans/midtrans-go/snap"
+	"google.golang.org/genai"
 )
 
 type BoostFranchiseRequest struct {
@@ -107,9 +109,9 @@ func BoostPurchaseCallback(c *gin.Context, app *config.App) {
 		return
 	}
 
-	if notif.TransactionStatus == "" || 
-	notif.TransactionStatus != "settlement" && 
-	notif.TransactionStatus != "capture" {
+	if notif.TransactionStatus == "" ||
+		notif.TransactionStatus != "settlement" &&
+			notif.TransactionStatus != "capture" {
 		c.JSON(http.StatusContinue, gin.H{"message": fmt.Sprintf("Status is %s", notif.TransactionStatus)})
 		return
 	}
@@ -178,14 +180,43 @@ func BoostPurchaseCallback(c *gin.Context, app *config.App) {
 			return
 		}
 
+		// Get franchise data for generating embedding
+		franchise := &models.Franchise{}
+		err = app.DB.Model(franchise).Where("id = ?", boost.FranchiseID).Select()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Gagal mengambil data franchise: %v", err)})
+			return
+		}
+
+		// Prepare update doc for Elasticsearch
+		updateDoc := map[string]interface{}{
+			"is_boosted": true,
+			"updated_at": time.Now(),
+		}
+
+		// Generate text embedding if Gemini is active and franchise is boosted
+		if os.Getenv("GEMINI_ACTIVE") == "true" && app.Gemini != nil {
+			textForEmbedding := franchise.Brand + " " + franchise.Description
+			embeddingRes, err := app.Gemini.Models.EmbedContent(context.Background(), "text-embedding-004", genai.Text(textForEmbedding), nil)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Gagal generate embedding: %v", err)})
+				return
+			}
+			if len(embeddingRes.Embeddings) > 0 {
+				// Convert []float32 to []float64 for Elasticsearch
+				textVector := make([]float64, len(embeddingRes.Embeddings[0].Values))
+				for i, v := range embeddingRes.Embeddings[0].Values {
+					textVector[i] = float64(v)
+				}
+				updateDoc["text_vector"] = textVector
+			}
+		}
+
 		// Sinkronisasi ke Elasticsearch
 		_, err = app.ES.Update().
 			Index("franchises").
 			Id(boost.FranchiseID.String()).
-			Doc(map[string]interface{}{
-				"is_boosted": true,
-				"updated_at": time.Now(),
-			}).
+			Doc(updateDoc).
 			Do(context.Background())
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Gagal update Franchise ES: %v", err)})

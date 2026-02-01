@@ -8,7 +8,7 @@ services:
       - discovery.type=single-node
       - xpack.security.enabled=true
       - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
-      - ES_JAVA_OPTS: "-Xms256m -Xmx256m"
+      - ES_JAVA_OPTS=-Xms256m -Xmx256m
     volumes:
       - esdata:/usr/share/elasticsearch/data
     ulimits:

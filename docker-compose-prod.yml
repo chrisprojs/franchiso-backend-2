@@ -6,14 +6,18 @@ services:
     restart: no
     environment:
       - discovery.type=single-node
-      - xpack.security.enabled=false
+      - xpack.security.enabled=true
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      - ES_JAVA_OPTS: "-Xms256m -Xmx256m"
     volumes:
       - esdata:/usr/share/elasticsearch/data
     ulimits:
       memlock:
         soft: -1
         hard: -1
-    mem_limit: 1g
+    mem_limit: 512m
+    networks:
+      - backend
   
   redis:
     image: redis:7.2
@@ -38,6 +42,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - backend
 
   app:
     build:
@@ -58,6 +64,7 @@ services:
       PG_USER: ${PG_USER}
       PG_PASSWORD: ${PG_PASSWORD}
       PG_DATABASE: ${PG_DATABASE}
+      AI_MODULE_URL: http://ai_module:5000
       REDIS_ADDR: redis:6379
       MIDTRANS_SERVER_KEY: ${MIDTRANS_SERVER_KEY}
       MIDTRANS_ENV: ${MIDTRANS_ENV}
@@ -73,14 +80,14 @@ services:
         condition: service_started
       elasticsearch:
         condition: service_started
+    networks:
+      - backend
 
   ai_module:
     image: ai_module
     build:
       context: ./ai_module
       dockerfile: Dockerfile
-    ports:
-      - "5000:5000"
     restart: no
     depends_on:
       postgres:
@@ -90,7 +97,16 @@ services:
       elasticsearch:
         condition: service_started
 
+networks:
+  backend:
+    driver: bridge
+
 volumes:
   esdata:
+    driver: local
   redisdata:
+    driver: local
   postgresdata:
+    driver: local
+  uploads:
+    driver: local

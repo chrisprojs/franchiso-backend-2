@@ -18,7 +18,7 @@ func AuthMiddleware(app *config.App, next gin.HandlerFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Token tidak ditemukan"})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Token not found"})
 			return
 		}
 		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
@@ -34,42 +34,42 @@ func AuthMiddleware(app *config.App, next gin.HandlerFunc) gin.HandlerFunc {
 
 		// If error is due to expiration, check refresh token
 		if !errors.Is(err, jwt.ErrTokenExpired) {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Token tidak valid"})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
 			return
 		}
 
-		// Ambil refresh token dari cookie
+		// Get refresh token from cookie
 		refreshToken, err := c.Cookie("refresh_token")
 		if err != nil {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Refresh token tidak ditemukan"})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Refresh token not found"})
 			return
 		}
 
 		refreshClaims, err := utils.ValidateJWT(refreshToken, "refresh")
 		if err != nil {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Refresh token tidak valid"})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid refresh token"})
 			return
 		}
 
-		// Cek refresh token di database sessions
+		// Check refresh token in sessions table
 		var session models.Session
 		err = app.DB.Model(&session).
 			Where("refresh_token = ? AND user_id = ?", refreshToken, refreshClaims.UserID).
 			Where("expires_at > ?", time.Now()).
 			Select()
 		if err != nil {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Session tidak valid"})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid session"})
 			return
 		}
 
-		// Generate access token baru
+		// Generate new access token
 		newAccessToken, err := utils.GenerateJWT(refreshClaims.UserID, refreshClaims.Role, "access")
 		if err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Gagal generate access token"})
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate access token"})
 			return
 		}
 
-		// Kirim access token baru ke client (bisa via header atau response body)
+		// Send new access token to client (can be via header or response body)
 		c.Header("X-New-Access-Token", newAccessToken)
 		c.Set("user_id", refreshClaims.UserID)
 		c.Set("role", refreshClaims.Role)

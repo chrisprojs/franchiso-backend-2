@@ -98,9 +98,9 @@ func (s *Server) setupRoutes() {
 		}))
 	}
 
-	// Mid trans callback routes group
+	// Mid trans callback routes group (generalized payment callback)
 	s.r.POST("/mid_trans/call_back", func(c *gin.Context) {
-		service.BoostPurchaseCallback(c, s.app)
+		service.PaymentCallback(c, s.app)
 	})
 
 	// Admin routes group
@@ -121,10 +121,7 @@ func (s *Server) Run() {
 }
 
 func main() {
-	err := godotenv.Load()
-	if err != nil {
-		panic(err)
-	}
+	_ = godotenv.Load()
 
 	go RunStorageProxy()
 

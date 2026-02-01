@@ -3,11 +3,10 @@ services:
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
     container_name: elasticsearch-2
+    restart: no
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
-    ports:
-      - "9201:9200"
     volumes:
       - esdata:/usr/share/elasticsearch/data
     ulimits:
@@ -19,23 +18,19 @@ services:
   redis:
     image: redis:7.2
     container_name: redis-2
-    restart: always
-    ports:
-      - "6278:6379"
+    restart: no
     volumes:
       - redisdata:/data
     command: ["redis-server", "--appendonly", "yes"]
 
   postgres:
     image: postgres:16-alpine
-    container_name: postgres
-    restart: always
+    container_name: postgres-2
+    restart: no
     environment:
-      POSTGRES_USER: ${PG_USER:-postgres}
-      POSTGRES_PASSWORD: ${PG_PASSWORD:-postgres}
-      POSTGRES_DB: ${PG_DATABASE:-franchiso}
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: ${PG_USER}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      POSTGRES_DB: ${PG_DATABASE}
     volumes:
       - postgresdata:/var/lib/postgresql/data
     healthcheck:
@@ -46,23 +41,31 @@ services:
 
   app:
     build:
-      context: ..
+      context: .
       dockerfile: Dockerfile
     container_name: franchiso-app
-    restart: always
+    restart: no
     ports:
       - "8080:8080"
       - "8081:8081"
     volumes:
-      - ../uploads:/root/uploads
-      - ../.env:/root/.env
+      - ./uploads:/root/uploads
+    env_file:
+      - .env
     environment:
-      PG_ADDR: postgres:5432
-      PG_USER: ${PG_USER:-postgres}
-      PG_PASSWORD: ${PG_PASSWORD:-postgres}
-      PG_DATABASE: ${PG_DATABASE:-franchiso}
-      REDIS_ADDR: redis:6379
       ELASTIC_URL: http://elasticsearch:9200
+      PG_ADDR: postgres:5432
+      PG_USER: ${PG_USER}
+      PG_PASSWORD: ${PG_PASSWORD}
+      PG_DATABASE: ${PG_DATABASE}
+      REDIS_ADDR: redis:6379
+      MIDTRANS_SERVER_KEY: ${MIDTRANS_SERVER_KEY}
+      MIDTRANS_ENV: ${MIDTRANS_ENV}
+      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_ACTIVE: ${GEMINI_ACTIVE}
+      SMTP_ACC: ${SMTP_ACC}
+      SMTP_ACC_PASSWORD: ${SMTP_ACC_PASSWORD}
     depends_on:
       postgres:
         condition: service_healthy
@@ -79,6 +82,13 @@ services:
     ports:
       - "5000:5000"
     restart: no
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      elasticsearch:
+        condition: service_started
 
 volumes:
   esdata:

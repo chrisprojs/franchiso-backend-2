@@ -14,7 +14,7 @@ func SendVerificationEmail(emailConfig *config.EmailConfig, toEmail, toName, ver
 	auth := smtp.PlainAuth("", emailConfig.SMTPUsername, emailConfig.SMTPPassword, emailConfig.SMTPHost)
 
 	// Email subject
-	subject := "Kode Verifikasi Email - Franchiso"
+	subject := "Email Verification Code - Franchiso"
 
 	// Email body (HTML format)
 	body := fmt.Sprintf(`
@@ -80,25 +80,25 @@ func SendVerificationEmail(emailConfig *config.EmailConfig, toEmail, toName, ver
 <body>
 	<div class="container">
 		<div class="header">
-			<h1>Verifikasi Email Anda</h1>
+			<h1>Verify Your Email</h1>
 		</div>
 		
-		<p>Halo <strong>%s</strong>,</p>
+		<p>Hello <strong>%s</strong>,</p>
 		
-		<p>Terima kasih telah mendaftar di Franchiso. Untuk menyelesaikan proses registrasi, silakan gunakan kode verifikasi berikut:</p>
+		<p>Thank you for registering with Franchiso. To complete the registration process, please use the following verification code:</p>
 		
 		<div class="code-box">
 			<div class="code">%s</div>
 		</div>
 		
 		<div class="warning">
-			<strong>Perhatian:</strong> Kode ini hanya berlaku selama 10 menit. Jangan bagikan kode ini kepada siapapun.
+			<strong>Attention:</strong> This code is only valid for 10 minutes. Do not share this code with anyone.
 		</div>
 		
-		<p>Jika Anda tidak melakukan registrasi ini, silakan abaikan email ini.</p>
+		<p>If you did not perform this registration, please ignore this email.</p>
 		
 		<div class="footer">
-			<p>Email ini dikirim otomatis, mohon tidak membalas email ini.</p>
+			<p>This email was sent automatically, please do not reply to this email.</p>
 			<p>&copy; 2024 Franchiso. All rights reserved.</p>
 		</div>
 	</div>
@@ -120,7 +120,7 @@ func SendVerificationEmail(emailConfig *config.EmailConfig, toEmail, toName, ver
 	addr := fmt.Sprintf("%s:%s", emailConfig.SMTPHost, emailConfig.SMTPPort)
 	err := smtp.SendMail(addr, auth, emailConfig.FromEmail, []string{toEmail}, msg.Bytes())
 	if err != nil {
-		return fmt.Errorf("gagal mengirim email: %v", err)
+		return fmt.Errorf("failed to send email: %v", err)
 	}
 
 	return nil

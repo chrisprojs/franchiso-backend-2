@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"image"
 	"image/jpeg"
-	"image/png"
+	_ "image/png"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"strings"
+	"path/filepath"
 
 	"github.com/disintegration/imaging"
 )
@@ -64,7 +65,7 @@ func DeleteFromStorageProxy(fileURL string) error {
 	filename := parts[len(parts)-1]
 
 	if filename == "" {
-		return fmt.Errorf("filename tidak valid")
+		return fmt.Errorf("invalid filename")
 	}
 
 	req, err := http.NewRequest(
@@ -85,59 +86,60 @@ func DeleteFromStorageProxy(fileURL string) error {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("gagal menghapus file (%d): %s", resp.StatusCode, string(body))
+		return fmt.Errorf("failed to delete file (%d): %s", resp.StatusCode, string(body))
 	}
 
 	return nil
 }
 
-// CropImageToSquare receives an image file from multipart.FileHeader, crops it to a square, and returns the cropped buffer along with the file format ("jpeg"/"png").
-func CropImageToSquare(fileHeader *multipart.FileHeader) (*bytes.Buffer, string, error) {
+func ImageProcessing(
+	fileHeader *multipart.FileHeader,
+) (*bytes.Buffer, string, error) {
+
 	file, err := fileHeader.Open()
 	if err != nil {
 		return nil, "", err
 	}
 	defer file.Close()
 
-	// Detect file format
-	ext := strings.ToLower(fileHeader.Filename)
-	var img image.Image
-	var format string
-	if strings.HasSuffix(ext, ".jpg") || strings.HasSuffix(ext, ".jpeg") {
-		img, err = jpeg.Decode(file)
-		format = "jpeg"
-	} else if strings.HasSuffix(ext, ".png") {
-		img, err = png.Decode(file)
-		format = "png"
-	} else {
-		return nil, "", fmt.Errorf("format file tidak didukung")
-	}
+	// Decode ANY supported image type
+	img, _, err := image.Decode(file)
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("failed to decode image: %w", err)
 	}
 
-	// Crop menjadi persegi
-	min := img.Bounds().Dx()
-	if img.Bounds().Dy() < min {
-		min = img.Bounds().Dy()
+	// Crop to square (center)
+	bounds := img.Bounds()
+	size := bounds.Dx()
+	if bounds.Dy() < size {
+		size = bounds.Dy()
 	}
-	cropped := imaging.CropCenter(img, min, min)
 
-	// Encode hasil crop ke buffer
+	cropped := imaging.CropCenter(img, size, size)
+
+	// Encode as TinyJPG-style JPEG
 	buf := new(bytes.Buffer)
-	if format == "jpeg" {
-		err = jpeg.Encode(buf, cropped, nil)
-	} else {
-		err = png.Encode(buf, cropped)
-	}
+	err = jpeg.Encode(buf, cropped, &jpeg.Options{
+		Quality: 75, // TinyJPG-like compression (70–80 sweet spot)
+	})
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("failed to encode jpeg: %w", err)
 	}
-	return buf, format, nil
+
+	// Always return jpeg
+	return buf, "jpeg", nil
 }
 
 // BufferToFileHeader mengubah buffer hasil crop menjadi *multipart.FileHeader agar bisa diupload
 func BufferToFileHeader(buf *bytes.Buffer, filename, format string) *multipart.FileHeader {
+	// Pastikan ekstensi filename sesuai format output (selalu jpg/jpeg)
+	ext := strings.ToLower(filepath.Ext(filename))
+	if format == "jpeg" || format == "jpg" {
+		if ext != ".jpg" && ext != ".jpeg" {
+			filename = strings.TrimSuffix(filename, ext) + ".jpeg"
+		}
+	}
+
 	// Buat multipart writer ke buffer baru
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)

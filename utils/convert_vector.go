@@ -29,7 +29,7 @@ func ConvertToVectorizedImage(filePath string) (models.VectorizedImage, error) {
 		return models.VectorizedImage{
 			FilePath: "",
 			Vector:   make([]float64, 512), // Return empty zero-vector
-		}, errors.New("file path tidak ditemukan")
+		}, errors.New("file path not found")
 	}
 
 	// 2. Prepare payload for Python service
@@ -40,7 +40,7 @@ func ConvertToVectorizedImage(filePath string) (models.VectorizedImage, error) {
 		return models.VectorizedImage{
 			FilePath: filePath,
 			Vector:   make([]float64, 512),
-		}, errors.New("gagal vectorize image")
+		}, errors.New("failed to vectorize image")
 	}
 
 	// 3. Make the HTTP Request
@@ -51,7 +51,7 @@ func ConvertToVectorizedImage(filePath string) (models.VectorizedImage, error) {
 		return models.VectorizedImage{
 			FilePath: filePath,
 			Vector:   make([]float64, 512),
-		}, errors.New("gagal vectorize image")
+		}, errors.New("failed to vectorize image")
 	}
 	defer resp.Body.Close()
 
@@ -61,7 +61,7 @@ func ConvertToVectorizedImage(filePath string) (models.VectorizedImage, error) {
 		return models.VectorizedImage{
 			FilePath: filePath,
 			Vector:   make([]float64, 512),
-		}, errors.New("gagal vectorize image")
+		}, errors.New("failed to vectorize image")
 	}
 
 	var vecResp VectorResponse
@@ -70,7 +70,7 @@ func ConvertToVectorizedImage(filePath string) (models.VectorizedImage, error) {
 		return models.VectorizedImage{
 			FilePath: filePath,
 			Vector:   make([]float64, 512),
-		}, errors.New("gagal vectorize image")
+		}, errors.New("failed to vectorize image")
 	}
 
 	// 5. Return the populated struct

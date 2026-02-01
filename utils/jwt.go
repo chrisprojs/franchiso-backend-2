@@ -25,7 +25,7 @@ func GenerateJWT(userID, role, tokenType string) (string, error) {
 	} else if tokenType == "refresh" {
 		expiresAt = time.Now().Add(7 * 24 * time.Hour) // refresh token 7 days
 	} else {
-		return "", errors.New("token type tidak valid")
+		return "", errors.New("invalid token type")
 	}
 
 	claims := JWTClaims{
@@ -51,10 +51,10 @@ func ValidateJWT(tokenString, expectedType string) (*JWTClaims, error) {
 	}
 	claims, ok := token.Claims.(*JWTClaims)
 	if !ok || !token.Valid {
-		return nil, errors.New("token tidak valid")
+		return nil, errors.New("invalid token")
 	}
 	if claims.TokenType != expectedType {
-		return nil, errors.New("token type tidak sesuai")
+		return nil, errors.New("mismatched token type")
 	}
 	return claims, nil
 }

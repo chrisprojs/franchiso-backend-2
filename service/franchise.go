@@ -56,28 +56,28 @@ func UploadFranchise(c *gin.Context, app *config.App) {
 
 	role := c.GetString("role")
 	if role != "Franchisor" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "User tidak memiliki akses"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User does not have access"})
 		return
 	}
 
 	userID := c.GetString("user_id")
 	if userID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "User tidak terautentikasi"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User is not authenticated"})
 		return
 	}
 
 	// Upload logo
 	var logoUrl string
 	if req.Logo != nil {
-		croppedBuf, format, err := utils.CropImageToSquare(req.Logo)
+		processBuf, format, err := utils.ImageProcessing(req.Logo)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal crop logo"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Only accept jpg/jpeg/png"})
 			return
 		}
-		logoFileHeader := utils.BufferToFileHeader(croppedBuf, req.Logo.Filename, format)
+		logoFileHeader := utils.BufferToFileHeader(processBuf, req.Logo.Filename, format)
 		logoUrl, err = utils.UploadToStorageProxy(logoFileHeader)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal upload logo"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload logo"})
 			return
 		}
 	}
@@ -85,15 +85,15 @@ func UploadFranchise(c *gin.Context, app *config.App) {
 	// Upload ad_photos (multiple)
 	adPhotoUrls := []string{}
 	for _, fileHeader := range req.AdPhotos {
-		croppedBuf, format, err := utils.CropImageToSquare(fileHeader)
+		processBuf, format, err := utils.ImageProcessing(fileHeader)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal crop ad_photos"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Only accept jpg/jpeg/png"})
 			return
 		}
-		adPhotoFileHeader := utils.BufferToFileHeader(croppedBuf, fileHeader.Filename, format)
+		adPhotoFileHeader := utils.BufferToFileHeader(processBuf, fileHeader.Filename, format)
 		url, err := utils.UploadToStorageProxy(adPhotoFileHeader)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal upload ad_photos"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload ad_photos"})
 			return
 		}
 		adPhotoUrls = append(adPhotoUrls, url)
@@ -170,14 +170,14 @@ func UploadFranchise(c *gin.Context, app *config.App) {
 
 	_, err = app.DB.Model(&franchise).Insert()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Gagal menyimpan data franchise: %v", err)})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save franchise data: %v", err)})
 		return
 	}
 
 	resp := UploadFranchiseResponse{
 		ID:      franchise.ID.String(),
 		Status:  franchise.Status,
-		Message: "Data franchise berhasil disimpan, menunggu verifikasi.",
+		Message: "Franchise data has been saved, waiting for verification.",
 	}
 	c.JSON(http.StatusOK, resp)
 }
@@ -213,7 +213,7 @@ func EditFranchise(c *gin.Context, app *config.App) {
 
 	role := c.GetString("role")
 	if role != "Franchisor" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "User tidak memiliki akses"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User does not have access"})
 		return
 	}
 
@@ -224,7 +224,7 @@ func EditFranchise(c *gin.Context, app *config.App) {
 		Where("user_id = ?", userID).
 		Select()
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Franchise tidak ditemukan"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "Franchise not found"})
 		return
 	}
 
@@ -299,15 +299,15 @@ func EditFranchise(c *gin.Context, app *config.App) {
 
 	// Logo
 	if req.Logo != nil {
-		croppedBuf, format, err := utils.CropImageToSquare(req.Logo)
+		processBuf, format, err := utils.ImageProcessing(req.Logo)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal crop logo"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Only accept jpg/jpeg/png"})
 			return
 		}
-		logoFileHeader := utils.BufferToFileHeader(croppedBuf, req.Logo.Filename, format)
+		logoFileHeader := utils.BufferToFileHeader(processBuf, req.Logo.Filename, format)
 		logoUrl, err := utils.UploadToStorageProxy(logoFileHeader)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal upload logo"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload logo"})
 			return
 		}
 		franchise.Logo = logoUrl
@@ -318,15 +318,15 @@ func EditFranchise(c *gin.Context, app *config.App) {
 	if req.AdPhotos != nil {
 		adPhotoUrls := []string{}
 		for _, fileHeader := range req.AdPhotos {
-			croppedBuf, format, err := utils.CropImageToSquare(fileHeader)
+			processBuf, format, err := utils.ImageProcessing(fileHeader)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal crop ad_photos"})
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Only accept jpg/jpeg/png"})
 				return
 			}
-			adPhotoFileHeader := utils.BufferToFileHeader(croppedBuf, fileHeader.Filename, format)
+			adPhotoFileHeader := utils.BufferToFileHeader(processBuf, fileHeader.Filename, format)
 			url, err := utils.UploadToStorageProxy(adPhotoFileHeader)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal upload ad_photos"})
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload ad_photos"})
 				return
 			}
 			adPhotoUrls = append(adPhotoUrls, url)
@@ -340,7 +340,7 @@ func EditFranchise(c *gin.Context, app *config.App) {
 		if req.Stpw != nil {
 			stpwUrl, err := utils.UploadToStorageProxy(req.Stpw)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal upload stpw"})
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload STPW"})
 				return
 			}
 			franchise.Stpw = stpwUrl
@@ -349,7 +349,7 @@ func EditFranchise(c *gin.Context, app *config.App) {
 		if req.Nib != nil {
 			nibUrl, err := utils.UploadToStorageProxy(req.Nib)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal upload nib"})
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload NIB"})
 				return
 			}
 			franchise.NIB = nibUrl
@@ -358,7 +358,7 @@ func EditFranchise(c *gin.Context, app *config.App) {
 		if req.Npwp != nil {
 			npwpUrl, err := utils.UploadToStorageProxy(req.Npwp)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal upload npwp"})
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload NPWP"})
 				return
 			}
 			franchise.NPWP = npwpUrl
@@ -378,7 +378,7 @@ func EditFranchise(c *gin.Context, app *config.App) {
 		Where("user_id = ?", userID).
 		Update()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Gagal mengupdate franchise: %v", err)})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to update franchise: %v", err)})
 		return
 	}
 
@@ -435,10 +435,10 @@ func EditFranchise(c *gin.Context, app *config.App) {
 		if franchise.IsBoosted && os.Getenv("GEMINI_ACTIVE") == "true" && app.Gemini != nil {
 			textForEmbedding := franchise.Brand + " " + franchise.Description
 			embeddingRes, err := app.Gemini.Models.EmbedContent(context.Background(), "text-embedding-004", genai.Text(textForEmbedding), nil)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal generate embedding: " + err.Error()})
-				return
-			}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate embedding: " + err.Error()})
+			return
+		}
 			if len(embeddingRes.Embeddings) > 0 {
 				// Convert []float32 to []float64 for Elasticsearch
 				textVector := make([]float64, len(embeddingRes.Embeddings[0].Values))
@@ -456,12 +456,12 @@ func EditFranchise(c *gin.Context, app *config.App) {
 			Refresh("true").
 			Do(context.Background())
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal sinkronisasi ke Elasticsearch"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to synchronize to Elasticsearch"})
 			return
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Franchise berhasil diupdate"})
+	c.JSON(http.StatusOK, gin.H{"message": "Franchise updated successfully"})
 }
 
 func DisplayFranchiseDetailByID(c *gin.Context, app *config.App) {
@@ -477,14 +477,14 @@ func DisplayFranchiseDetailByID(c *gin.Context, app *config.App) {
 			Where("franchise.id = ?", franchiseID).
 			Select()
 		if err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Franchise tidak ditemukan"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "Franchise not found"})
 			return
 		}
 
 		role := c.GetString("role")
 		userID := c.GetString("user_id")
 		if role != "Admin" && !(role == "Franchisor" && userID == franchise.UserID.String()) {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Akses ditolak"})
+			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 			return
 		}
 
@@ -501,13 +501,13 @@ func DisplayFranchiseDetailByID(c *gin.Context, app *config.App) {
 			Exclude("logo.vector", "ad_photos.vector", "text_vector")).
 		Do(context.Background())
 	if err != nil || !res.Found {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Franchise tidak ditemukan"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "Franchise not found"})
 		return
 	}
 	var franchise models.FranchiseES
 	err = json.Unmarshal(res.Source, &franchise)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal decode data franchise dari Elasticsearch"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to decode franchise data from Elasticsearch"})
 		return
 	}
 	c.JSON(http.StatusOK, franchise)
@@ -520,13 +520,13 @@ type DisplayMyFranchisesResponse struct {
 func DisplayMyFranchises(c *gin.Context, app *config.App) {
 	userID := c.GetString("user_id")
 	if userID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "User tidak terautentikasi"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User is not authenticated"})
 		return
 	}
 
 	role := c.GetString("role")
 	if role != "Franchisor" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "User tidak memiliki akses"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User does not have access"})
 		return
 	}
 
@@ -536,7 +536,7 @@ func DisplayMyFranchises(c *gin.Context, app *config.App) {
 		Relation("Category").
 		Select()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data franchise"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch franchise data"})
 		return
 	}
 
@@ -559,6 +559,8 @@ type SearchFranchiseRequest struct {
 	MaxBranchCount    *int                  `form:"max_branch_count"`
 	MinYearFounded    *int                  `form:"min_year_founded"`
 	MaxYearFounded    *int                  `form:"max_year_founded"`
+	OrderBy        *string 					`form:"order_by"`        // e.g., "investment", "monthly_revenue"
+    OrderDirection *string 					`form:"order_direction"`
 	Page              *int                  `form:"page"`
 	Limit             *int                  `form:"limit"`
 	SearchByImage     *multipart.FileHeader `form:"search_by_image"`
@@ -610,12 +612,14 @@ func SearchingFranchise(c *gin.Context, app *config.App) {
 
 		query := strings.ToLower(req.SearchQuery)
 
-		exactQuery := elastic.NewTermQuery("brand", query).Boost(0.5)
-		wildcardQuery := elastic.NewWildcardQuery("brand", "*" + query + "*").Boost(0.5)
+		prefixQuery := elastic.NewPrefixQuery("brand", query).Boost(0.5)
+		matchQuery := elastic.NewMatchQuery("brand", query).Operator("and").Boost(0.5)
+		phraseQuery := elastic.NewMatchPhraseQuery("brand", query).Boost(0.5)
 
 		textQuery.
-			Should(exactQuery).
-			Should(wildcardQuery).
+			Should(prefixQuery).
+			Should(matchQuery).
+			Should(phraseQuery).
 			MinimumShouldMatch("1")
 
 		countBool := elastic.NewBoolQuery().Must(textQuery)
@@ -825,16 +829,15 @@ func SearchingFranchise(c *gin.Context, app *config.App) {
 		boolQuery["must"] = textScoreSource
 	}
 
+	sorts := utils.BuildSort(req.OrderBy, req.OrderDirection)
+
 	searchSource := map[string]interface{}{
 		"query": map[string]interface{}{
 			"bool": boolQuery,
 		},
 		"from": from,
 		"size": limit,
-		"sort": []map[string]interface{}{
-			{"is_boosted": map[string]interface{}{"order": "desc"}},
-			{"_score": map[string]interface{}{"order": "desc"}},
-		},
+		"sort": sorts,
 		"_source": map[string]interface{}{
 			"excludes": []string{
 				"text_vector",

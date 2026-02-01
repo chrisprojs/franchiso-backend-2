@@ -31,7 +31,7 @@ func RunStorageProxy() {
 	r.POST("/upload", func(c *gin.Context) {
 		file, header, err := c.Request.FormFile("file")
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "File tidak ditemukan"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "File not found"})
 			return
 		}
 		defer file.Close()
@@ -58,7 +58,7 @@ func RunStorageProxy() {
 
 		_, err = io.Copy(out, file)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menyimpan file"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file"})
 			return
 		}
 
@@ -84,7 +84,7 @@ func RunStorageProxy() {
 		// Check if file exists
 		if _, err := os.Stat(filePath); os.IsNotExist(err) {
 			c.JSON(http.StatusNotFound, gin.H{
-				"error": "File tidak ditemukan",
+				"error": "File not found",
 			})
 			return
 		}
@@ -93,13 +93,13 @@ func RunStorageProxy() {
 		err := os.Remove(filePath)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Gagal menghapus file",
+				"error": "Failed to delete file",
 			})
 			return
 		}
 	
 		c.JSON(http.StatusOK, gin.H{
-			"message":  "File berhasil dihapus",
+			"message":  "File deleted successfully",
 			"filename": filename,
 		})
 	})

@@ -19,7 +19,7 @@ type DisplayAllRequestForVerificationFranchiseResponse struct {
 func DisplayAllRequestForVerificationFranchise(c *gin.Context, app *config.App) {
 	role := c.GetString("role")
 	if role != "Admin" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "User tidak memiliki akses"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User does not have access"})
 		return
 	}
 
@@ -28,7 +28,7 @@ func DisplayAllRequestForVerificationFranchise(c *gin.Context, app *config.App) 
 		Where("status = ?", "Menunggu Verifikasi").
 		Select()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data franchise: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch franchise data: " + err.Error()})
 		return
 	}
 	resp := DisplayAllRequestForVerificationFranchiseResponse{
@@ -51,7 +51,7 @@ func VerifyFranchise(c *gin.Context, app *config.App) {
 
 	role := c.GetString("role")
 	if role != "Admin" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "User tidak memiliki akses"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User does not have access"})
 		return
 	}
 
@@ -62,7 +62,7 @@ func VerifyFranchise(c *gin.Context, app *config.App) {
 		Set("status = ?", req.Status).
 		Update()
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("Franchise tidak berhasil diupdate: %v", err)})
+		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("Failed to update franchise: %v", err)})
 		return
 	}
 
@@ -101,7 +101,7 @@ func VerifyFranchise(c *gin.Context, app *config.App) {
 			return
 		}
 
-		// Convert ad_photos to []map[string]interface{} untuk memastikan struktur objek di Elasticsearch
+		// Convert ad_photos to []map[string]interface{} to ensure object structure in Elasticsearch
 		adPhotosMaps := make([]map[string]interface{}, len(adPhotosVectorized))
 		for i, img := range adPhotosVectorized {
 			adPhotosMaps[i] = map[string]interface{}{
@@ -145,10 +145,10 @@ func VerifyFranchise(c *gin.Context, app *config.App) {
 			BodyJson(doc).
 			Do(context.Background())
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal sinkronisasi ke Elasticsearch"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to synchronize to Elasticsearch"})
 			return
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Status franchise berhasil diupdate"})
+	c.JSON(http.StatusOK, gin.H{"message": "Franchise status updated successfully"})
 }

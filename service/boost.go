@@ -20,6 +20,18 @@ import (
 	"google.golang.org/genai"
 )
 
+// PaymentHandler interface to handle various types of payments
+type PaymentHandler interface {
+	// GetPaymentType returns the payment type (e.g., "boost", "subscription", etc.)
+	GetPaymentType() string
+	
+	// ValidateOrderID validates whether the order_id is valid for this handler
+	ValidateOrderID(orderID string, app *config.App) (bool, error)
+	
+	// ProcessPayment processes the payment after it has been successfully paid
+	ProcessPayment(orderID string, notif *coreapi.TransactionStatusResponse, app *config.App) error
+}
+
 type BoostFranchiseRequest struct {
 	Package string `json:"package" binding:"required"` // ex: "7", "14", "30"
 }
@@ -39,7 +51,7 @@ func BoostFranchise(c *gin.Context, app *config.App) {
 
 	role := c.GetString("role")
 	if role != "Franchisor" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "User tidak memiliki akses"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User does not have access"})
 		return
 	}
 
@@ -54,7 +66,7 @@ func BoostFranchise(c *gin.Context, app *config.App) {
 	case "30":
 		price = 350000
 	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Paket tidak valid"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid package"})
 		return
 	}
 
@@ -76,7 +88,7 @@ func BoostFranchise(c *gin.Context, app *config.App) {
 	}
 	_, err = app.DB.Model(&boost).Insert()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membuat boost"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create boost"})
 		return
 	}
 
@@ -90,7 +102,7 @@ func BoostFranchise(c *gin.Context, app *config.App) {
 	snapClient := app.Midtrans.SnapClient
 	snapResp, err := snapClient.CreateTransaction(snapReq)
 	if snapResp.Token == "" || snapResp.RedirectURL == "" {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Gagal membuat pembayaran: %v", err)})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create payment: %v", err)})
 		return
 	}
 
@@ -102,59 +114,32 @@ func BoostFranchise(c *gin.Context, app *config.App) {
 	c.JSON(http.StatusOK, res)
 }
 
-func BoostPurchaseCallback(c *gin.Context, app *config.App) {
-	var notif coreapi.TransactionStatusResponse
-	if err := c.ShouldBindJSON(&notif); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
+// BoostPaymentHandler implements PaymentHandler for boost payments
+type BoostPaymentHandler struct{}
 
-	if notif.TransactionStatus == "" ||
-		notif.TransactionStatus != "settlement" &&
-			notif.TransactionStatus != "capture" {
-		c.JSON(http.StatusContinue, gin.H{"message": fmt.Sprintf("Status is %s", notif.TransactionStatus)})
-		return
-	}
+func (h *BoostPaymentHandler) GetPaymentType() string {
+	return "boost"
+}
 
-	// Ambil boost berdasarkan order_id
-	boostID := notif.OrderID
+func (h *BoostPaymentHandler) ValidateOrderID(orderID string, app *config.App) (bool, error) {
 	boost := &models.Boost{}
-	err := app.DB.Model(boost).Where("id = ?", boostID).Select()
+	err := app.DB.Model(boost).Where("id = ?", orderID).Select()
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("Boost tidak ditemukan: %v", err)})
-		return
+		return false, nil // Order ID not found, not an error
 	}
-	if boost.IsActive {
-		c.JSON(http.StatusContinue, gin.H{"message": "Boost already active"})
-		return
-	}
+	return true, nil
+}
 
-	// Catat payment
-	transactionTime, err := utils.ParseStringToTime(notif.TransactionTime)
+func (h *BoostPaymentHandler) ProcessPayment(orderID string, notif *coreapi.TransactionStatusResponse, app *config.App) error {
+	// Get boost by order_id
+	boost := &models.Boost{}
+	err := app.DB.Model(boost).Where("id = ?", orderID).Select()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err})
-		return
+		return fmt.Errorf("boost not found: %v", err)
 	}
-	grossAmount, err := strconv.ParseFloat(notif.GrossAmount, 64)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err})
-		return
-	}
-	payment := models.Payment{
-		ID:                uuid.New(),
-		BoostID:           boost.ID,
-		TransactionID:     uuid.MustParse(notif.TransactionID),
-		GrossAmount:       float64(grossAmount),
-		PaymentType:       notif.PaymentType,
-		TransactionTime:   transactionTime,
-		TransactionStatus: notif.TransactionStatus,
-		CreatedAt:         time.Now(),
-		UpdatedAt:         time.Now(),
-	}
-	_, err = app.DB.Model(&payment).Insert()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Gagal mencatat payment: %s", err)})
-		return
+	
+	if boost.IsActive {
+		return fmt.Errorf("boost sudah aktif")
 	}
 
 	// If payment is successful, activate boost & franchise
@@ -165,8 +150,7 @@ func BoostPurchaseCallback(c *gin.Context, app *config.App) {
 			Where("id = ?", boost.ID).
 			Update()
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Gagal update Boost: %v", err)})
-			return
+			return fmt.Errorf("failed to update Boost: %v", err)
 		}
 
 		// Update franchise directly without select (avoid N+1)
@@ -176,16 +160,14 @@ func BoostPurchaseCallback(c *gin.Context, app *config.App) {
 			Where("id = ?", boost.FranchiseID).
 			Update()
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Gagal update Franchise PG: %v", err)})
-			return
+			return fmt.Errorf("failed to update Franchise in PostgreSQL: %v", err)
 		}
 
 		// Get franchise data for generating embedding
 		franchise := &models.Franchise{}
 		err = app.DB.Model(franchise).Where("id = ?", boost.FranchiseID).Select()
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Gagal mengambil data franchise: %v", err)})
-			return
+		return fmt.Errorf("failed to fetch franchise data: %v", err)
 		}
 
 		// Prepare update doc for Elasticsearch
@@ -199,8 +181,7 @@ func BoostPurchaseCallback(c *gin.Context, app *config.App) {
 			textForEmbedding := franchise.Brand + " " + franchise.Description
 			embeddingRes, err := app.Gemini.Models.EmbedContent(context.Background(), "text-embedding-004", genai.Text(textForEmbedding), nil)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Gagal generate embedding: %v", err)})
-				return
+				return fmt.Errorf("failed to generate embedding: %v", err)
 			}
 			if len(embeddingRes.Embeddings) > 0 {
 				// Convert []float32 to []float64 for Elasticsearch
@@ -212,17 +193,117 @@ func BoostPurchaseCallback(c *gin.Context, app *config.App) {
 			}
 		}
 
-		// Sinkronisasi ke Elasticsearch
+		// Synchronize to Elasticsearch
 		_, err = app.ES.Update().
 			Index("franchises").
 			Id(boost.FranchiseID.String()).
 			Doc(updateDoc).
 			Do(context.Background())
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Gagal update Franchise ES: %v", err)})
-			return
+			return fmt.Errorf("failed to update Franchise in Elasticsearch: %v", err)
 		}
 	}
 
+	return nil
+}
+
+// PaymentCallback is a generalized function to handle all types of payment callbacks from Midtrans
+func PaymentCallback(c *gin.Context, app *config.App) {
+	var notif coreapi.TransactionStatusResponse
+	if err := c.ShouldBindJSON(&notif); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Validasi status transaksi
+	if notif.TransactionStatus == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Transaction status must not be empty"})
+		return
+	}
+
+	// Skip if status is not settlement or capture (pending, cancel, etc.)
+	if notif.TransactionStatus != "settlement" && notif.TransactionStatus != "capture" {
+		c.JSON(http.StatusContinue, gin.H{"message": fmt.Sprintf("Status transaksi: %s", notif.TransactionStatus)})
+		return
+	}
+
+	// Find the appropriate handler based on order_id
+	handler := findPaymentHandler(notif.OrderID, app)
+	if handler == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("No handler found for order_id: %s", notif.OrderID)})
+		return
+	}
+
+	// Record payment to the database
+	transactionTime, err := utils.ParseStringToTime(notif.TransactionTime)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to parse transaction time: %v", err)})
+		return
+	}
+	
+	grossAmount, err := strconv.ParseFloat(notif.GrossAmount, 64)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to parse payment amount: %v", err)})
+		return
+	}
+
+	// Parse order_id as UUID for BoostID (can be changed if needed)
+	orderUUID, err := uuid.Parse(notif.OrderID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid order ID: %v", err)})
+		return
+	}
+
+	payment := models.Payment{
+		ID:                uuid.New(),
+		BoostID:           orderUUID,
+		TransactionID:     uuid.MustParse(notif.TransactionID),
+		GrossAmount:       float64(grossAmount),
+		PaymentType:       notif.PaymentType,
+		TransactionTime:   transactionTime,
+		TransactionStatus: notif.TransactionStatus,
+		CreatedAt:         time.Now(),
+		UpdatedAt:         time.Now(),
+	}
+	
+	_, err = app.DB.Model(&payment).Insert()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to record payment: %s", err)})
+		return
+	}
+
+	// Process payment according to the handler
+	if err := handler.ProcessPayment(notif.OrderID, &notif, app); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to process payment: %v", err)})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{"message": "OK"})
+}
+
+// findPaymentHandler finds the appropriate handler based on order_id
+// The handler is determined by validating the order_id against each registered handler
+func findPaymentHandler(orderID string, app *config.App) PaymentHandler {
+	// List all available handlers
+	handlers := []PaymentHandler{
+		&BoostPaymentHandler{},
+		// Add other handlers here if needed (e.g., SubscriptionPaymentHandler, etc.)
+	}
+
+	// Find handler that can validate the order_id
+	for _, handler := range handlers {
+		valid, err := handler.ValidateOrderID(orderID, app)
+		if err != nil {
+			continue // Skip if there is an error
+		}
+		if valid {
+			return handler
+		}
+	}
+
+	return nil
+}
+
+func BoostPurchaseCallback(c *gin.Context, app *config.App) {
+	PaymentCallback(c, app)
 }

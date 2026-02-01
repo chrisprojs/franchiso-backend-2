@@ -85,7 +85,7 @@ func Register(c *gin.Context, app *config.App) {
 	var existingUser models.User
 	err := app.DB.Model(&existingUser).Where("email = ?", req.Email).Select()
 	if err == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Email sudah terdaftar"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Email is already registered"})
 		return
 	}
 
@@ -94,20 +94,20 @@ func Register(c *gin.Context, app *config.App) {
 	pendingKey := fmt.Sprintf("pending_registration:%s", req.Email)
 	exists, err := app.Redis.Exists(ctx, pendingKey).Result()
 	if err == nil && exists > 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Email sedang dalam proses verifikasi. Silakan cek email Anda atau tunggu beberapa saat"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Email is in the verification process. Please check your email or wait a moment"})
 		return
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Gagal hash password: %v", err)})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to hash password: %v", err)})
 		return
 	}
 
 	// Generate verification code
 	verificationCode, err := utils.GenerateVerificationCode()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal generate verification code"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate verification code"})
 		return
 	}
 
@@ -124,40 +124,40 @@ func Register(c *gin.Context, app *config.App) {
 
 	userDataJSON, err := json.Marshal(pendingUser)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menyiapkan data registrasi"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to prepare registration data"})
 		return
 	}
 
 	// Save data with key: pending_registration:{email}
 	err = app.Redis.Set(ctx, pendingKey, string(userDataJSON), 10*time.Minute).Err()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menyimpan data registrasi"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store registration data"})
 		return
 	}
 
-	// Set attempt counter ke 0
+	// Initialize attempt counter to 0
 	attemptKey := fmt.Sprintf("verification_attempt:%s", req.Email)
 	err = app.Redis.Set(ctx, attemptKey, "0", 10*time.Minute).Err()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menyiapkan sistem verifikasi"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to initialize verification system"})
 		return
 	}
 
-	// Kirim email dengan verification code
+	// Send email with verification code
 	err = SendVerificationEmail(app.Email, req.Email, req.Name, verificationCode)
 	if err != nil {
-		// Log error tapi jangan gagalkan registrasi, karena data sudah tersimpan di Redis
-		// User masih bisa mencoba verifikasi dengan kode yang sudah di-generate
-		fmt.Printf("Warning: Gagal mengirim email verifikasi ke %s: %v\n", req.Email, err)
-		// Bisa juga hapus data dari Redis jika ingin gagalkan proses jika email gagal dikirim
+		// Log the error but do not fail registration, because the data is already stored in Redis
+		// The user can still try to verify using the generated code
+		fmt.Printf("Warning: Failed to send verification email to %s: %v\n", req.Email, err)
+		// Optionally delete data from Redis if you want to cancel the process when email fails to send
 		// app.Redis.Del(ctx, pendingKey)
 		// app.Redis.Del(ctx, attemptKey)
-		// c.JSON(http.StatusInternalServerError, gin.H{"error": "Registrasi berhasil tapi gagal mengirim email verifikasi. Silakan hubungi administrator."})
+		// c.JSON(http.StatusInternalServerError, gin.H{"error": "Registration succeeded but failed to send verification email. Please contact the administrator."})
 		// return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Registrasi berhasil. Silakan cek email Anda untuk kode verifikasi",
+		"message": "Registration successful. Please check your email for the verification code",
 	})
 }
 
@@ -172,54 +172,54 @@ func VerifyEmail(c *gin.Context, app *config.App) {
 	pendingKey := fmt.Sprintf("pending_registration:%s", req.Email)
 	attemptKey := fmt.Sprintf("verification_attempt:%s", req.Email)
 
-	// Cek apakah data registrasi ada di Redis
+	// Check whether registration data exists in Redis
 	pendingData, err := app.Redis.Get(ctx, pendingKey).Result()
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Kode verifikasi tidak valid atau sudah kadaluarsa. Silakan registrasi ulang"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Verification code is invalid or has expired. Please register again"})
 		return
 	}
 
-	// Cek attempt counter
+	// Check attempt counter
 	attemptStr, err := app.Redis.Get(ctx, attemptKey).Result()
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Gagal membaca data percobaan"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read attempt data"})
 		return
 	}
 
 	var attemptCount int
 	fmt.Sscanf(attemptStr, "%d", &attemptCount)
 	if attemptCount >= 3 {
-		// Hapus data dari Redis karena sudah 3 kali gagal
+		// Delete data from Redis because verification has failed 3 times
 		app.Redis.Del(ctx, pendingKey)
 		app.Redis.Del(ctx, attemptKey)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Percobaan verifikasi sudah mencapai batas maksimum (3 kali). Silakan registrasi ulang"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Verification attempts have reached the maximum limit (3 times). Please register again"})
 		return
 	}
 
-	// Parse data user dari Redis
+	// Parse user data from Redis
 	var pendingUser PendingUserData
 	if err := json.Unmarshal([]byte(pendingData), &pendingUser); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membaca data registrasi"})
 		return
 	}
 
-	// Verifikasi kode
+	// Verify code
 	if pendingUser.Code != req.VerificationCode {
 		// Increment attempt counter
 		attemptCount++
 		app.Redis.Set(ctx, attemptKey, fmt.Sprintf("%d", attemptCount), 10*time.Minute)
 		remainingAttempts := 3 - attemptCount
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error":              "Kode verifikasi salah",
+			"error":              "Incorrect verification code",
 			"remaining_attempts": remainingAttempts,
 		})
 		return
 	}
 
-	// Kode benar, simpan user ke database
+	// Code is correct, save user to database
 	userID, err := uuid.Parse(pendingUser.ID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memproses data user"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process user data"})
 		return
 	}
 
@@ -235,19 +235,19 @@ func VerifyEmail(c *gin.Context, app *config.App) {
 
 	_, err = app.DB.Model(&user).Insert()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Gagal menyimpan user: %v", err)})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save user: %v", err)})
 		return
 	}
 
-	// Generate JWT token setelah verifikasi berhasil
+	// Generate JWT token after verification is successful
 	accessToken, err := utils.GenerateJWT(user.ID.String(), user.Role, "access")
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Gagal generate access token: %v", err)})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to generate access token: %v", err)})
 		return
 	}
 	refreshToken, err := utils.GenerateJWT(user.ID.String(), user.Role, "refresh")
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Gagal generate refresh token: %v", err)})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to generate refresh token: %v", err)})
 		return
 	}
 
@@ -262,11 +262,11 @@ func VerifyEmail(c *gin.Context, app *config.App) {
 	}
 	_, err = app.DB.Model(&session).Insert()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menyimpan session"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save session"})
 		return
 	}
 
-	// Hapus data dari Redis karena sudah berhasil
+	// Delete data from Redis because verification has succeeded
 	app.Redis.Del(ctx, pendingKey)
 	app.Redis.Del(ctx, attemptKey)
 
@@ -293,24 +293,24 @@ func Login(c *gin.Context, app *config.App) {
 	var user models.User
 	err := app.DB.Model(&user).Where("email = ?", req.Email).Select()
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Email atau password salah"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Email or password is incorrect"})
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Email atau password salah"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Email or password is incorrect"})
 		return
 	}
 
 	// Generate JWT token after user successfully logged in
 	accessToken, err := utils.GenerateJWT(user.ID.String(), user.Role, "access")
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Gagal generate access token: %v", err)})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to generate access token: %v", err)})
 		return
 	}
 	refreshToken, err := utils.GenerateJWT(user.ID.String(), user.Role, "refresh")
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Gagal generate refresh token: %v", err)})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to generate refresh token: %v", err)})
 		return
 	}
 
@@ -325,7 +325,7 @@ func Login(c *gin.Context, app *config.App) {
 	}
 	_, err = app.DB.Model(&session).Insert()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menyimpan session"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save session"})
 		return
 	}
 
@@ -346,14 +346,14 @@ func Login(c *gin.Context, app *config.App) {
 func GetProfile(c *gin.Context, app *config.App) {
 	userID := c.GetString("user_id")
 	if userID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "User tidak terautentikasi"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User is not authenticated"})
 		return
 	}
 
 	var user models.User
 	err := app.DB.Model(&user).Where("id = ?", userID).Select()
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User tidak ditemukan"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
 

@@ -64,6 +64,7 @@ services:
       PG_USER: ${PG_USER:-postgres}
       PG_PASSWORD: ${PG_PASSWORD:-postgres}
       PG_DATABASE: ${PG_DATABASE:-franchiso}
+      AI_MODULE_URL: http://ai_module:5000
       REDIS_ADDR: redis:6379
       MIDTRANS_SERVER_KEY: ${MIDTRANS_SERVER_KEY}
       MIDTRANS_ENV: ${MIDTRANS_ENV}

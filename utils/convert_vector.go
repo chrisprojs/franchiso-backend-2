@@ -6,12 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/chrisprojs/Franchiso/models"
 )
-
-const VECTORIZE_IMAGE_URL = "http://localhost:5000/vectorize"
 
 type VectorRequest struct {
 	FilePath string `json:"file_path"`
@@ -24,6 +23,7 @@ type VectorResponse struct {
 // convertToVectorizedImage converts a file path string to VectorizedImage structure
 // Vector is initialized as empty array with 512 dimensions (will be populated by vector service later)
 func ConvertToVectorizedImage(filePath string) (models.VectorizedImage, error) {
+	var VECTORIZE_IMAGE_URL = fmt.Sprintf("%s/vectorize", os.Getenv("AI_MODULE_URL"))
 	// 1. Handle empty paths immediately
 	if filePath == "" {
 		return models.VectorizedImage{

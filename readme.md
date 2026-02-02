@@ -1,4 +1,4 @@
-# Franchiso
+# Franchiso 🏪
 Franchiso is a web-based marketplace platform designed to facilitate the buying and selling of franchise businesses in Indonesia by connecting franchisors and potential franchisees in a single digital ecosystem. The platform allows franchisors to publish detailed franchise information, including investment costs, return on investment, business documents, and outlet locations, while enabling franchisees to search and compare opportunities using advanced filters and location mapping features. By incorporating business verification, structured information, and secure transaction support, Franchiso aims to increase transparency, trust, and efficiency in the franchise trading process, making it easier for users to find, evaluate, and acquire franchise business opportunities.
 
 ## AI & Search Features

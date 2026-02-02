@@ -1,0 +1,231 @@
+# 1. STORAGE: This reserves a 10GB Google Cloud Disk for your databases
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: database-data-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+# 2. SECRETS: Stores your sensitive passwords
+# Run the 'kubectl create secret' command from the previous step OR define them here:
+apiVersion: v1
+kind: Secret
+metadata:
+  name: franchiso-secrets
+type: Opaque
+stringData:
+  postgres-password: "postgres"
+  jwt-secret: "test_123"
+  midtrans-server-key: "write-your-midtrans-key"
+  google-maps-api-key: "write-your-google-maps-api-key"
+  gemini-api-key: "write-your-gemini-api-key"
+  smtp-acc: "write-your-smtp-acc"
+  smtp-acc-password: "write-your-smtp-acc-password"
+---
+# 3. DEPLOYMENT: The "All-in-One" Pod matching your Docker Compose
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: franchiso-stack
+spec:
+  replicas: 1 # Must be 1 when using a single PVC for databases
+  selector:
+    matchLabels:
+      app: franchiso
+  template:
+    metadata:
+      labels:
+        app: franchiso
+    spec:
+      # FIX: This ensures the volume is accessible by the non-root users in the containers
+      securityContext:
+        fsGroup: 1000
+
+      # FIX: Init container to set permissions on the shared volume
+      initContainers:
+      - name: fix-permissions
+        image: busybox
+        command: ["sh", "-c", "chown -R 1000:1000 /usr/share/elasticsearch/data && chmod 700 /var/lib/postgresql/data"]
+        volumeMounts:
+        - name: db-storage
+          mountPath: /usr/share/elasticsearch/data
+          subPath: elastic-data
+        - name: db-storage
+          mountPath: /var/lib/postgresql/data
+          subPath: postgres-data
+      containers:
+      # --- POSTGRES ---
+      - name: postgres
+        image: postgres:16-alpine
+        env:
+        - name: POSTGRES_USER
+          value: "postgres"
+        - name: POSTGRES_DB
+          value: "franchiso_db"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: franchiso-secrets
+              key: postgres-password
+        volumeMounts:
+        - name: db-storage
+          mountPath: /var/lib/postgresql/data
+          subPath: postgres-data
+
+      # --- REDIS ---
+      - name: redis
+        image: redis:7.2
+        command: ["redis-server", "--appendonly", "yes"]
+        volumeMounts:
+        - name: db-storage
+          mountPath: /data
+          subPath: redis-data
+
+      # --- ELASTICSEARCH ---
+      - name: elasticsearch
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+        env:
+        - name: network.host
+          value: "0.0.0.0"
+        - name: discovery.type
+          value: "single-node"
+        - name: discovery.seed_hosts # ADD THIS
+          value: "[]"
+        - name: xpack.security.enabled
+          value: "false"
+        - name: ES_JAVA_OPTS
+          value: "-Xms1g -Xmx1g"
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "2Gi"
+          limits:
+            cpu: "1000m"
+            memory: "3Gi"
+        volumeMounts:
+        - name: db-storage
+          mountPath: /usr/share/elasticsearch/data
+          subPath: elastic-data
+
+      # --- GO BACKEND ---
+      - name: backend-app
+        image: us-central1-docker.pkg.dev/franchiso-468410/franchiso-backend-2/app:latest
+        command: ["sh", "-c"]
+        args:
+          - |
+            until nc -z localhost 5432; do echo "waiting for postgres..."; sleep 2; done;
+            until nc -z localhost 9200; do echo "waiting for elasticsearch..."; sleep 2; done;
+            ./main  # Or whatever your executable name is
+        ports:
+        - containerPort: 8080
+        - containerPort: 8081
+        env:
+        - name: ELASTIC_URL
+          value: "http://localhost:9200"
+        - name: PG_ADDR
+          value: "localhost:5432"
+        - name: PG_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: franchiso-secrets
+              key: postgres-password
+        - name: AI_MODULE_URL
+          value: "http://localhost:5000"
+        - name: REDIS_ADDR
+          value: "localhost:6379"
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: franchiso-secrets
+              key: jwt-secret
+        - name: MIDTRANS_SERVER_KEY
+          valueFrom:
+            secretKeyRef:
+              name: franchiso-secrets
+              key: midtrans-server-key
+        - name: MIDTRANS_ENV
+          value: "sandbox"
+        - name: GOOGLE_MAPS_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: franchiso-secrets
+              key: google-maps-api-key
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: franchiso-secrets
+              key: gemini-api-key
+        - name: GEMINI_ACTIVE
+          value: "true"
+        - name: SMTP_ACC
+          valueFrom:
+            secretKeyRef:
+              name: franchiso-secrets
+              key: smtp-acc
+        - name: SMTP_ACC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: franchiso-secrets
+              key: smtp-acc-password
+        volumeMounts:
+        - name: db-storage
+          mountPath: /root/uploads
+          subPath: user-uploads
+
+      # --- AI MODULE ---
+      - name: ai-module
+        image: us-central1-docker.pkg.dev/franchiso-468410/franchiso-backend-2/ai_module:latest
+        ports:
+        - containerPort: 5000
+
+      volumes:
+      - name: db-storage
+        persistentVolumeClaim:
+          claimName: database-data-pvc
+---
+# 4. SERVICE: Exposing your app to the internet
+apiVersion: v1
+kind: Service
+metadata:
+  name: franchiso-service
+spec:
+  type: LoadBalancer
+  selector:
+    app: franchiso
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8080
+    - name: http-storage   # <--- ADD THIS BLOCK
+      protocol: TCP
+      port: 8081
+      targetPort: 8081
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-internal
+spec:
+  type: ClusterIP  # <--- Internal only
+  selector:
+    app: franchiso
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: elastic-internal
+spec:
+  type: ClusterIP # <--- Internal only
+  selector:
+    app: franchiso
+  ports:
+    - port: 9200
+      targetPort: 9200

@@ -2,3 +2,4 @@ vendor/
 uploads/
 .env
 .env.*
+_debug_bin*
